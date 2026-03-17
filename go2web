@@ -2,6 +2,62 @@
 #!/usr/bin/env python3
 import sys
 import argparse
+import socket
+import ssl
+from urllib.parse import urlparse
+
+def raw_http_request(url, accept="text/html,application/json"):
+    parsed = urlparse(url)
+    scheme = parsed.scheme
+    host = parsed.hostname
+    port = parsed.port or (443 if scheme == "https" else 80)
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        f"Accept: {accept}\r\n"
+        f"Accept-Language: en-US,en;q=0.9\r\n"
+        f"User-Agent: go2web/1.0\r\n"
+        f"Connection: close\r\n\r\n"
+    )
+
+    sock = socket.create_connection((host, port), timeout=10)
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        sock = ctx.wrap_socket(sock, server_hostname=host)
+
+    sock.sendall(request.encode())
+
+    response = b""
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+    sock.close()
+
+    header_end = response.find(b"\r\n\r\n")
+    headers_raw = response[:header_end].decode("utf-8", errors="replace")
+    body_raw = response[header_end + 4:]
+
+    status_line = headers_raw.splitlines()[0]
+    status_code = int(status_line.split()[1])
+
+    headers = {}
+    for line in headers_raw.splitlines()[1:]:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            headers[k.strip().lower()] = v.strip()
+
+    try:
+        body = body_raw.decode("utf-8", errors="replace")
+    except Exception:
+        body = body_raw.decode("latin-1", errors="replace")
+
+    return status_code, headers, body
 
 def main():
     parser = argparse.ArgumentParser(prog="go2web", add_help=False)
@@ -21,7 +77,12 @@ Usage:
         sys.exit(0)
 
     if args.u:
-        print(f"[TODO] fetch URL: {args.u}")
+        try:
+            status, headers, body = raw_http_request(args.u)
+            print(body)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
     if args.s:
         term = " ".join(args.s)
