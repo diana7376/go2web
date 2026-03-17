@@ -4,7 +4,7 @@ import argparse
 import socket
 import ssl
 import json
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
 from bs4 import BeautifulSoup
 
 def decode_chunked(data):
@@ -111,6 +111,29 @@ def render_response(body, content_type):
     else:
         return render_html(body)
 
+def search(term):
+    query = quote_plus(term)
+    url = f"https://html.duckduckgo.com/html/?q={query}"
+    body, content_type = http_get(url, accept="text/html")
+    soup = BeautifulSoup(body, "html.parser")
+
+    results = []
+    for result in soup.select(".result"):
+        title_tag = result.select_one(".result__title")
+        link_tag = result.select_one(".result__url")
+        snippet_tag = result.select_one(".result__snippet")
+
+        title = title_tag.get_text(strip=True) if title_tag else "No title"
+        link = link_tag.get_text(strip=True) if link_tag else ""
+        snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
+
+        if title and link:
+            results.append((title, link, snippet))
+        if len(results) >= 10:
+            break
+
+    return results
+
 def main():
     parser = argparse.ArgumentParser(prog="go2web", add_help=False)
     parser.add_argument("-u", metavar="URL", help="Make HTTP request to URL")
@@ -138,7 +161,31 @@ Usage:
 
     if args.s:
         term = " ".join(args.s)
-        print(f"[TODO] search for: {term}")
+        try:
+            results = search(term)
+            if not results:
+                print("No results found.")
+            else:
+                for i, (title, link, snippet) in enumerate(results, 1):
+                    print(f"{i}. {title}")
+                    print(f"   {link}")
+                    if snippet:
+                        print(f"   {snippet}")
+                    print()
+
+                print("Enter result number to open (or press Enter to skip): ", end="")
+                choice = input().strip()
+                if choice.isdigit():
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(results):
+                        link = results[idx][1]
+                        if not link.startswith("http"):
+                            link = "https://" + link
+                        body, content_type = http_get(link)
+                        print(render_response(body, content_type))
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
