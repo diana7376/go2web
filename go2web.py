@@ -4,8 +4,32 @@ import argparse
 import socket
 import ssl
 import json
+import hashlib
+import os
+import time
 from urllib.parse import urlparse, quote_plus
 from bs4 import BeautifulSoup
+
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".go2web_cache")
+CACHE_TTL = 300
+
+def cache_key(url):
+    return hashlib.md5(url.encode()).hexdigest()
+
+def cache_get(url):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = os.path.join(CACHE_DIR, cache_key(url))
+    if os.path.exists(path):
+        if time.time() - os.path.getmtime(path) < CACHE_TTL:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+    return None
+
+def cache_set(url, data):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = os.path.join(CACHE_DIR, cache_key(url))
+    with open(path, "w", encoding="utf-8", errors="replace") as f:
+        f.write(data)
 
 def decode_chunked(data):
     result = b""
@@ -78,6 +102,11 @@ def raw_http_request(url, accept="text/html,application/json"):
     return status_code, headers, body
 
 def http_get(url, accept="text/html,application/json", max_redirects=5):
+    cached = cache_get(url)
+    if cached:
+        print("[cache hit]")
+        return cached, "text/html"
+
     for _ in range(max_redirects):
         status, headers, body = raw_http_request(url, accept)
         if status in (301, 302, 303, 307, 308):
@@ -90,6 +119,7 @@ def http_get(url, accept="text/html,application/json", max_redirects=5):
             print(f"[redirect → {url}]")
             continue
         content_type = headers.get("content-type", "text/html")
+        cache_set(url, body)
         return body, content_type
     raise Exception("Too many redirects")
 

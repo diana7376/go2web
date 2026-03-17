@@ -5,8 +5,32 @@ import argparse
 import socket
 import ssl
 import json
-from urllib.parse import urlparse
+import hashlib
+import os
+import time
+from urllib.parse import urlparse, quote_plus
 from bs4 import BeautifulSoup
+
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".go2web_cache")
+CACHE_TTL = 300
+
+def cache_key(url):
+    return hashlib.md5(url.encode()).hexdigest()
+
+def cache_get(url):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = os.path.join(CACHE_DIR, cache_key(url))
+    if os.path.exists(path):
+        if time.time() - os.path.getmtime(path) < CACHE_TTL:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+    return None
+
+def cache_set(url, data):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = os.path.join(CACHE_DIR, cache_key(url))
+    with open(path, "w", encoding="utf-8", errors="replace") as f:
+        f.write(data)
 
 def decode_chunked(data):
     result = b""
@@ -79,6 +103,11 @@ def raw_http_request(url, accept="text/html,application/json"):
     return status_code, headers, body
 
 def http_get(url, accept="text/html,application/json", max_redirects=5):
+    cached = cache_get(url)
+    if cached:
+        print("[cache hit]")
+        return cached, "text/html"
+
     for _ in range(max_redirects):
         status, headers, body = raw_http_request(url, accept)
         if status in (301, 302, 303, 307, 308):
@@ -91,6 +120,7 @@ def http_get(url, accept="text/html,application/json", max_redirects=5):
             print(f"[redirect → {url}]")
             continue
         content_type = headers.get("content-type", "text/html")
+        cache_set(url, body)
         return body, content_type
     raise Exception("Too many redirects")
 
@@ -111,6 +141,29 @@ def render_response(body, content_type):
             return body
     else:
         return render_html(body)
+
+def search(term):
+    query = quote_plus(term)
+    url = f"https://html.duckduckgo.com/html/?q={query}"
+    body, content_type = http_get(url, accept="text/html")
+    soup = BeautifulSoup(body, "html.parser")
+
+    results = []
+    for result in soup.select(".result"):
+        title_tag = result.select_one(".result__title")
+        link_tag = result.select_one(".result__url")
+        snippet_tag = result.select_one(".result__snippet")
+
+        title = title_tag.get_text(strip=True) if title_tag else "No title"
+        link = link_tag.get_text(strip=True) if link_tag else ""
+        snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
+
+        if title and link:
+            results.append((title, link, snippet))
+        if len(results) >= 10:
+            break
+
+    return results
 
 def main():
     parser = argparse.ArgumentParser(prog="go2web", add_help=False)
@@ -139,7 +192,31 @@ Usage:
 
     if args.s:
         term = " ".join(args.s)
-        print(f"[TODO] search for: {term}")
+        try:
+            results = search(term)
+            if not results:
+                print("No results found.")
+            else:
+                for i, (title, link, snippet) in enumerate(results, 1):
+                    print(f"{i}. {title}")
+                    print(f"   {link}")
+                    if snippet:
+                        print(f"   {snippet}")
+                    print()
+
+                print("Enter result number to open (or press Enter to skip): ", end="")
+                choice = input().strip()
+                if choice.isdigit():
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(results):
+                        link = results[idx][1]
+                        if not link.startswith("http"):
+                            link = "https://" + link
+                        body, content_type = http_get(link)
+                        print(render_response(body, content_type))
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
