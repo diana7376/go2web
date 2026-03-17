@@ -77,6 +77,22 @@ def raw_http_request(url, accept="text/html,application/json"):
 
     return status_code, headers, body
 
+def http_get(url, accept="text/html,application/json", max_redirects=5):
+    for _ in range(max_redirects):
+        status, headers, body = raw_http_request(url, accept)
+        if status in (301, 302, 303, 307, 308):
+            location = headers.get("location", "")
+            if location.startswith("/"):
+                parsed = urlparse(url)
+                url = f"{parsed.scheme}://{parsed.hostname}{location}"
+            else:
+                url = location
+            print(f"[redirect → {url}]")
+            continue
+        content_type = headers.get("content-type", "text/html")
+        return body, content_type
+    raise Exception("Too many redirects")
+
 def render_html(html):
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "head", "noscript"]):
@@ -114,8 +130,7 @@ Usage:
 
     if args.u:
         try:
-            status, headers, body = raw_http_request(args.u)
-            content_type = headers.get("content-type", "text/html")
+            body, content_type = http_get(args.u)
             print(render_response(body, content_type))
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
